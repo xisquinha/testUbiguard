@@ -5,7 +5,15 @@
   <video id="remoteVideo" autoplay playsinline style="width:100%; display:none"></video>
 
 <script type="module">
-  // --- paste shared signaling helper here ---
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue, push } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
+
+  const app = initializeApp({
+    apiKey: "AIzaSyCgQ5-OmUPRlFlopVW7nrqnwSy5xcNmqdk",
+    databaseURL: "https://ubiguard-sim-default-rtdb.europe-west1.firebasedatabase.app/"
+  });
+  const db = getDatabase(app);
+  const ALARM_UID = "alarm_YOURMACHERE"; // ← change this
 
   const status = document.getElementById('status');
   const remoteVideo = document.getElementById('remoteVideo');
@@ -18,27 +26,21 @@
 
   async function connectToStream(offer) {
     status.textContent = "🔗 A ligar ao stream...";
-
-    // 1. Create connection and listen for incoming video track
     pc = new RTCPeerConnection(servers);
+
     pc.ontrack = (event) => {
       remoteVideo.srcObject = event.streams[0];
       remoteVideo.style.display = 'block';
       status.textContent = "🔴 Ao vivo";
     };
 
-    // 2. Send our ICE candidates to Firebase
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        push(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`),
-          event.candidate.toJSON());
+        push(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`), event.candidate.toJSON());
       }
     };
 
-    // 3. Accept the offer from the camera phone
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-    // 4. Create and send back our answer
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await set(ref(db, `/alarms/${ALARM_UID}/webrtc/answer`), {
@@ -46,7 +48,6 @@
       sdp: answer.sdp
     });
 
-    // 5. Listen for camera phone's ICE candidates
     onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/callerCandidates`), (snapshot) => {
       snapshot.forEach(child => {
         pc.addIceCandidate(new RTCIceCandidate(child.val()));
@@ -54,14 +55,12 @@
     });
   }
 
-  // Watch for an offer appearing in Firebase
   onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/offer`), (snapshot) => {
     if (snapshot.val() && !pc) {
       connectToStream(snapshot.val());
     }
   });
 
-  // Watch isFired to reset UI when alarm stops  
   onValue(ref(db, `/alarms/${ALARM_UID}/isFired`), (snapshot) => {
     if (!snapshot.val()) {
       if (pc) { pc.close(); pc = null; }
