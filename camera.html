@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="status">A aguardar alarme...</p>
+  <video id="localVideo" autoplay playsinline muted style="width:100%"></video>
+
+<script type="module">
+  // --- paste shared signaling helper here ---
+
+  const status = document.getElementById('status');
+  const localVideo = document.getElementById('localVideo');
+
+  // STUN servers — these are free Google servers that help
+  // the two phones find each other across different networks
+  const servers = {
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  };
+
+  let pc = null; // RTCPeerConnection
+  let localStream = null;
+
+  async function startStreaming() {
+    status.textContent = "📷 A ligar câmara...";
+
+    // 1. Get camera
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    localVideo.srcObject = localStream;
+
+    // 2. Create WebRTC connection
+    pc = new RTCPeerConnection(servers);
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+    // 3. Send ICE candidates to Firebase as they're discovered
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        push(ref(db, `/alarms/${ALARM_UID}/webrtc/callerCandidates`), 
+          event.candidate.toJSON());
+      }
+    };
+
+    // 4. Create offer and save to Firebase
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await set(ref(db, `/alarms/${ALARM_UID}/webrtc/offer`), {
+      type: offer.type,
+      sdp: offer.sdp
+    });
+
+    status.textContent = "⏳ A aguardar que o utilizador se ligue...";
+
+    // 5. Wait for the viewer's answer
+    onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/answer`), async (snapshot) => {
+      if (snapshot.val() && !pc.currentRemoteDescription) {
+        const answer = new RTCSessionDescription(snapshot.val());
+        await pc.setRemoteDescription(answer);
+        status.textContent = "🔴 A transmitir ao vivo!";
+      }
+    });
+
+    // 6. Listen for viewer's ICE candidates
+    onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`), (snapshot) => {
+      snapshot.forEach(child => {
+        pc.addIceCandidate(new RTCIceCandidate(child.val()));
+      });
+    });
+  }
+
+  function stopStreaming() {
+    if (pc) { pc.close(); pc = null; }
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    // Clean up Firebase signaling data
+    set(ref(db, `/alarms/${ALARM_UID}/webrtc`), null);
+    status.textContent = "A aguardar alarme...";
+  }
+
+  // Watch isFired — same as before
+  let streaming = false;
+  onValue(ref(db, `/alarms/${ALARM_UID}/isFired`), (snapshot) => {
+    const fired = snapshot.val();
+    if (fired && !streaming) { streaming = true; startStreaming(); }
+    else if (!fired && streaming) { streaming = false; stopStreaming(); }
+  });
+</script>
+</body>
+</html>
