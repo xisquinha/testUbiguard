@@ -1,80 +1,29 @@
 <!DOCTYPE html>
 <html>
+<head>
+    <title>Security Camera Node</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
 <body>
-  <p id="status">A aguardar alarme...</p>
-  <video id="localVideo" autoplay playsinline muted style="width:100%"></video>
+    <h2>Status: <span id="status">Waiting...</span></h2>
+    <video id="myVideo" autoplay muted playsinline style="width: 300px; border: 2px solid red;"></video>
 
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
-  import { getDatabase, ref, set, onValue, push } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
+    <script>
+        const peer = new Peer('security-cam-123'); // Give your camera a unique ID
+        const videoElement = document.getElementById('myVideo');
 
-  const app = initializeApp({
-    apiKey: "AIzaSyA9RU8Z1RZ_fAsKVW6nWXy-Qyz9qwXipFo",
-    databaseURL: "https://esp-project-adbef-default-rtdb.europe-west1.firebasedatabase.app/"
-  });
-  const db = getDatabase(app);
-  const ALARM_UID = "alarm_3076F5F04D70"; // ← change this
+        // 1. Get Camera Stream
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+            videoElement.srcObject = stream;
 
-  const status = document.getElementById('status');
-  const localVideo = document.getElementById('localVideo');
+            // 2. Wait for the Viewer to call
+            peer.on('call', call => {
+                document.getElementById('status').innerText = "Streaming Live!";
+                call.answer(stream); // Send our video to the viewer
+            });
+        });
 
-  const servers = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  };
-
-  let pc = null;
-  let localStream = null;
-
-  async function startStreaming() {
-    status.textContent = "📷 A ligar câmara...";
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    localVideo.srcObject = localStream;
-
-    pc = new RTCPeerConnection(servers);
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        push(ref(db, `/alarms/${ALARM_UID}/webrtc/callerCandidates`), event.candidate.toJSON());
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await set(ref(db, `/alarms/${ALARM_UID}/webrtc/offer`), {
-      type: offer.type,
-      sdp: offer.sdp
-    });
-
-    status.textContent = "⏳ A aguardar que o utilizador se ligue...";
-
-    onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/answer`), async (snapshot) => {
-      if (snapshot.val() && !pc.currentRemoteDescription) {
-        await pc.setRemoteDescription(new RTCSessionDescription(snapshot.val()));
-        status.textContent = "🔴 A transmitir ao vivo!";
-      }
-    });
-
-    onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`), (snapshot) => {
-      snapshot.forEach(child => {
-        pc.addIceCandidate(new RTCIceCandidate(child.val()));
-      });
-    });
-  }
-
-  function stopStreaming() {
-    if (pc) { pc.close(); pc = null; }
-    if (localStream) localStream.getTracks().forEach(t => t.stop());
-    set(ref(db, `/alarms/${ALARM_UID}/webrtc`), null);
-    status.textContent = "A aguardar alarme...";
-  }
-
-  let streaming = false;
-  onValue(ref(db, `/alarms/${ALARM_UID}/isFired`), (snapshot) => {
-    const fired = snapshot.val();
-    if (fired && !streaming) { streaming = true; startStreaming(); }
-    else if (!fired && streaming) { streaming = false; stopStreaming(); }
-  });
-</script>
+        peer.on('open', id => console.log('Camera ready with ID: ' + id));
+    </script>
 </body>
 </html>
