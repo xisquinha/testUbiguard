@@ -2,28 +2,84 @@
 <html>
 <head>
     <title>Security Camera Node</title>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
-    <h2>Status: <span id="status">Waiting...</span></h2>
+    <h2>Camera Status: <span id="status">Idle (Aguardando Alarme)</span></h2>
     <video id="myVideo" autoplay muted playsinline style="width: 300px; border: 2px solid red;"></video>
 
-    <script>
-        const peer = new Peer('security-cam-123'); // Give your camera a unique ID
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+        import { getDatabase, ref, set, onValue, push, onChildAdded } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
+
+        const firebaseConfig = {
+           apiKey: "AIzaSyA9RU8Z1RZ_fAsKVW6nWXy-Qyz9qwXipFo",
+            databaseURL: "https://esp-project-adbef-default-rtdb.europe-west1.firebasedatabase.app/"
+        };
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        
+        // Match this with your ESP32's generated MAC UID
+        const ALARM_UID = "alarm_3076F5F04D70"; 
+
+        const status = document.getElementById('status');
         const videoElement = document.getElementById('myVideo');
+        
+        let localStream = null;
+        let pc = null;
+        const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-        // 1. Get Camera Stream
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-            videoElement.srcObject = stream;
-
-            // 2. Wait for the Viewer to call
-            peer.on('call', call => {
-                document.getElementById('status').innerText = "Streaming Live!";
-                call.answer(stream); // Send our video to the viewer
-            });
+        // Listen for Alarm from ESP32
+        onValue(ref(db, `/alarms/${ALARM_UID}/isFired`), async (snapshot) => {
+            if (snapshot.val() === true) {
+                status.textContent = "🚨 ALARME DISPARADO! Iniciando Câmera...";
+                startCamera();
+            } else {
+                status.textContent = "Idle (Aguardando Alarme)";
+                stopCamera();
+            }
         });
 
-        peer.on('open', id => console.log('Camera ready with ID: ' + id));
+        async function startCamera() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            videoElement.srcObject = localStream;
+
+            pc = new RTCPeerConnection(servers);
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    push(ref(db, `/alarms/${ALARM_UID}/webrtc/callerCandidates`), event.candidate.toJSON());
+                }
+            };
+
+            // Create WebRTC Offer
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await set(ref(db, `/alarms/${ALARM_UID}/webrtc/offer`), { type: offer.type, sdp: offer.sdp });
+
+            // Listen for Answer from Viewer
+            onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/answer`), async (snapshot) => {
+                if (snapshot.val() && pc.signalingState !== "stable") {
+                    await pc.setRemoteDescription(new RTCSessionDescription(snapshot.val()));
+                }
+            });
+
+            // Listen for ICE candidates from Viewer
+            onChildAdded(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`), (snapshot) => {
+                if (snapshot.val()) {
+                    pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+                }
+            });
+        }
+
+        function stopCamera() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (pc) { pc.close(); pc = null; }
+            videoElement.srcObject = null;
+            set(ref(db, `/alarms/${ALARM_UID}/webrtc`), null); // Clean up WebRTC signaling data
+        }
     </script>
 </body>
 </html>
