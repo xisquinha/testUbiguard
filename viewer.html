@@ -91,9 +91,19 @@
             pc.ontrack = (event) => {
                 log(`Remote track received: ${event.track.kind}`);
                 if (event.streams && event.streams[0]) {
+                    remoteVideo.style.display = 'block';      // visible BEFORE srcObject
                     remoteVideo.srcObject = event.streams[0];
-                    remoteVideo.style.display = 'block';
-                    statusEl.textContent = "🔴 Ao vivo";
+                    remoteVideo.play()
+                        .then(() => {
+                            statusEl.textContent = "🔴 Ao vivo";
+                            log("Video playing ✅");
+                        })
+                        .catch(e => {
+                            log(`❌ play() blocked: ${e.message}`);
+                            statusEl.textContent = "⚠️ Clique para iniciar vídeo";
+                            // Fallback: let user tap to unblock autoplay
+                            remoteVideo.addEventListener('click', () => remoteVideo.play(), { once: true });
+                        });
                 }
             };
 
