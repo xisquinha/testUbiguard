@@ -2,74 +2,171 @@
 <html>
 <head>
     <title>Viewer Node</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; background: #111; color: #eee; }
+        #log { font-size: 12px; background: #222; padding: 8px; border-radius: 4px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+        video { margin-top: 12px; border: 2px solid #0f0; border-radius: 4px; }
+    </style>
 </head>
 <body>
-  <h2>Viewer Status: <p id="status">A aguardar alarme...</p></h2>
-  <video id="remoteVideo" autoplay playsinline style="width:100%; max-width: 500px; display:none; border: 2px solid green;"></video>
+    <h2>Viewer Node</h2>
+    <p>Status: <span id="status">A aguardar alarme...</span></p>
+    <video id="remoteVideo" autoplay playsinline style="width:100%; max-width:500px; display:none;"></video>
+    <pre id="log"></pre>
 
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
-  import { getDatabase, ref, set, onValue, push, onChildAdded } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
+    <script type="module">
+        import { initializeApp }    from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+        import { getDatabase, ref, set, onValue, push, onChildAdded }
+                                    from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
 
-  const app = initializeApp({ 
-    apiKey: "AIzaSyCY4Hbw2Dhc7HbZovdG_uPPjkfECsMAS98",
-    databaseURL: "https://esp-project-adbef-default-rtdb.europe-west1.firebasedatabase.app/"
-  });
-  const db = getDatabase(app);
-  const ALARM_UID = "alarm_3076F5F04D70"; 
+        const app = initializeApp({
+            apiKey:      "AIzaSyCY4Hbw2Dhc7HbZovdG_uPPjkfECsMAS98",
+            databaseURL: "https://esp-project-adbef-default-rtdb.europe-west1.firebasedatabase.app/"
+        });
+        const db = getDatabase(app);
 
-  const status = document.getElementById('status');
-  const remoteVideo = document.getElementById('remoteVideo');
-  const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-  let pc = null;
+        const ALARM_UID   = "alarm_3076F5F04D70";
+        const statusEl    = document.getElementById('status');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const logEl       = document.getElementById('log');
 
-  async function connectToStream(offer) {
-    status.textContent = "🔗 A ligar ao stream...";
-    pc = new RTCPeerConnection(servers);
+        function log(msg) {
+            const ts = new Date().toLocaleTimeString();
+            console.log(msg);
+            logEl.textContent += `[${ts}] ${msg}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
 
-    pc.ontrack = (event) => {
-      remoteVideo.srcObject = event.streams[0];
-      remoteVideo.style.display = 'block';
-      status.textContent = "🔴 Ao vivo";
-    };
+        // ── ICE / STUN + free TURN servers ──────────────────────────────────
+        const servers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                // Free public TURN — handles symmetric NAT where STUN fails
+                {
+                    urls:       'turn:openrelay.metered.ca:80',
+                    username:   'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls:       'turn:openrelay.metered.ca:443',
+                    username:   'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ]
+        };
 
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        push(ref(db, `/alarms/${ALARM_UID}/webrtc/viewerCandidates`), event.candidate.toJSON());
-      }
-    };
+        // ── Firebase paths ───────────────────────────────────────────────────
+        const basePath             = `/alarms/${ALARM_UID}`;
+        const offerPath            = `${basePath}/webrtc/offer`;
+        const answerPath           = `${basePath}/webrtc/answer`;
+        const callerCandidatesPath = `${basePath}/webrtc/callerCandidates`;
+        const viewerCandidatesPath = `${basePath}/webrtc/viewerCandidates`;
 
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    
-    await set(ref(db, `/alarms/${ALARM_UID}/webrtc/answer`), {
-      type: answer.type,
-      sdp: answer.sdp
-    });
+        let pc = null;
 
-    // Listen for streaming incoming connection tokens
-    onChildAdded(ref(db, `/alarms/${ALARM_UID}/webrtc/callerCandidates`), (snapshot) => {
-      if (snapshot.val()) {
-        pc.addIceCandidate(new RTCIceCandidate(snapshot.val()));
-      }
-    });
-  }
+        // ── Connect to camera stream ─────────────────────────────────────────
+        async function connectToStream(offer) {
+            // Clean up any stale connection first
+            if (pc) {
+                log("Closing stale peer connection before reconnecting");
+                pc.close();
+                pc = null;
+            }
 
-  // Handle stream orchestration
-  onValue(ref(db, `/alarms/${ALARM_UID}/webrtc/offer`), (snapshot) => {
-    if (snapshot.val() && !pc) {
-      connectToStream(snapshot.val());
-    }
-  });
+            log("Connecting to camera stream...");
+            statusEl.textContent = "🔗 A ligar ao stream...";
 
-  onValue(ref(db, `/alarms/${ALARM_UID}/isFired`), (snapshot) => {
-    if (!snapshot.val()) {
-      if (pc) { pc.close(); pc = null; }
-      remoteVideo.style.display = 'none';
-      status.textContent = "A aguardar alarme...";
-    }
-  });
-</script>
+            pc = new RTCPeerConnection(servers);
+
+            // Show remote video when track arrives
+            pc.ontrack = (event) => {
+                log(`Remote track received: ${event.track.kind}`);
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.style.display = 'block';
+                    statusEl.textContent = "🔴 Ao vivo";
+                }
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                log(`ICE state: ${pc.iceConnectionState}`);
+                if (pc.iceConnectionState === 'failed') {
+                    statusEl.textContent = "❌ ICE failed — verifique a rede";
+                }
+                if (pc.iceConnectionState === 'disconnected') {
+                    statusEl.textContent = "⚠️ Stream desligado";
+                }
+            };
+            pc.onconnectionstatechange = () => {
+                log(`Connection state: ${pc.connectionState}`);
+            };
+
+            // Send our ICE candidates to Firebase
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    log(`Sending viewer ICE candidate: ${event.candidate.type}`);
+                    push(ref(db, viewerCandidatesPath), event.candidate.toJSON());
+                }
+            };
+
+            // Apply the offer from the camera
+            log("Applying remote description (offer)...");
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            log("Remote description (offer) set ✅");
+
+            // Create and send our answer
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            log("Local description (answer) set ✅");
+
+            await set(ref(db, answerPath), { type: answer.type, sdp: answer.sdp });
+            log("Answer pushed to Firebase ✅");
+
+            // ─────────────────────────────────────────────────────────────────
+            // Now it is safe to add the camera's ICE candidates because
+            // setRemoteDescription() has already been called above.
+            // onChildAdded delivers any children already in Firebase instantly.
+            // ─────────────────────────────────────────────────────────────────
+            onChildAdded(ref(db, callerCandidatesPath), (snapshot) => {
+                if (!snapshot.val()) return;
+                log(`Adding caller ICE candidate: ${snapshot.val().type || 'unknown'}`);
+                pc.addIceCandidate(new RTCIceCandidate(snapshot.val()))
+                  .catch(e => log(`addIceCandidate error: ${e.message}`));
+            });
+        }
+
+        // ── Watch for alarm cleared ──────────────────────────────────────────
+        onValue(ref(db, `${basePath}/isFired`), (snapshot) => {
+            if (!snapshot.val()) {
+                log("Alarm cleared — resetting viewer");
+                if (pc) { pc.close(); pc = null; }
+                remoteVideo.style.display = 'none';
+                remoteVideo.srcObject = null;
+                statusEl.textContent = "A aguardar alarme...";
+            }
+        });
+
+        // ── Watch for WebRTC offer from camera ───────────────────────────────
+        // onValue fires immediately with the current value, and again on change.
+        // We drop the !pc guard so we properly reconnect if the camera restarts.
+        onValue(ref(db, offerPath), (snapshot) => {
+            const offer = snapshot.val();
+            if (!offer) {
+                log("No offer in Firebase yet");
+                return;
+            }
+            // Only connect if we're not already stable/connected
+            if (pc && (pc.signalingState === 'stable' || pc.connectionState === 'connected')) {
+                log("Already connected — ignoring new offer");
+                return;
+            }
+            log("Offer detected in Firebase — initiating connection");
+            connectToStream(offer).catch(err => {
+                log(`❌ connectToStream error: ${err.message}`);
+                statusEl.textContent = `❌ Erro: ${err.message}`;
+            });
+        });
+    </script>
 </body>
 </html>
