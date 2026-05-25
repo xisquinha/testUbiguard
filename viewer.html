@@ -194,7 +194,8 @@
         const db   = getDatabase(app);
         const auth = getAuth(app);
 
-        const ALARM_UID = "alarm_3076F5F04D70";
+        const params   = new URLSearchParams(window.location.search);
+        const ALARM_UID = params.get('alarmId');
         const basePath  = `/alarms/${ALARM_UID}`;
 
         const paths = {
@@ -306,7 +307,7 @@
         window.addEventListener('beforeunload', () => {
             set(ref(db, paths.streamRequested), false);
         });
-        
+
         // ── WebRTC handshake ──────────────────────────────────────────────────
         async function connectToStream(offer) {
             if (pc) { pc.close(); pc = null; }
